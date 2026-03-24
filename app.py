@@ -1,37 +1,43 @@
 import geopandas as gpd
 import folium
 
-# Load shapefile
 gdf = gpd.read_file("ooipsectiongrid.shp")
 
-# Reproject if needed
-if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
-    gdf = gdf.to_crs(epsg=4326)
+# Ensure original CRS is set
+if gdf.crs is None:
+    raise ValueError("Missing CRS in shapefile")
 
-# Add ID
-gdf = gdf.reset_index().rename(columns={"index": "id"})
+# Reproject to a projected CRS (meters-based)
+gdf_projected = gdf.to_crs(epsg=26913)
 
-# Map center
-centroid = gdf.geometry.centroid
-center = [centroid.y.mean(), centroid.x.mean()]
+# Compute centroid in projected CRS (accurate)
+centroid = gdf_projected.geometry.centroid
 
+# Convert centroids back to lat/lon
+centroid_latlon = gpd.GeoSeries(centroid, crs=26913).to_crs(epsg=4326)
+
+center = [centroid_latlon.y.mean(), centroid_latlon.x.mean()]
+
+# Back to lat/lon for mapping
+gdf = gdf.to_crs(epsg=4326)
+
+# Create map
 m = folium.Map(location=center, zoom_start=10)
 
-# Columns WITHOUT geometry
+# Fields (exclude geometry)
 fields = [col for col in gdf.columns if col != "geometry"]
 
-# Add GeoJSON layer
+# Add layer
 folium.GeoJson(
     gdf,
-    tooltip=folium.GeoJsonTooltip(fields=fields),  # ✅ FIX HERE
-    style_function=lambda feature: {
+    tooltip=folium.GeoJsonTooltip(fields=fields),
+    style_function=lambda x: {
         "color": "blue",
         "weight": 1,
-        "fillOpacity": 0.3,
-    },
+        "fillOpacity": 0.3
+    }
 ).add_to(m)
 
-# Save map
 m.save("map.html")
 
-print("Open map.html in your browser")
+print("Map saved as map.html")
