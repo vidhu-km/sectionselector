@@ -11,7 +11,6 @@
     html, body { margin:0; height:100%; font-family:sans-serif; }
     #map { width:100%; height:100%; }
 
-    /* Sidebar */
     #panel {
       position:absolute;
       top:10px; left:10px;
@@ -34,10 +33,7 @@
       margin-bottom:10px;
     }
 
-    .title {
-      font-weight:700;
-      font-size:13px;
-    }
+    .title { font-weight:700; font-size:13px; }
 
     .badge {
       font-size:11px;
@@ -102,7 +98,6 @@
 <body>
   <div id="map"></div>
 
-  <!-- Sidebar UI -->
   <div id="panel">
     <div class="header">
       <div class="title">Selection Export</div>
@@ -111,8 +106,10 @@
 
     <div class="hint">
       <div><span class="key">Lasso</span>: drag on the map</div>
-      <div><span class="key">Shift</span> + click/lasso: add/toggle</div>
-      <div><b>Only</b> <span class="key">ooipsectiongrid</span> is selectable</div>
+      <div><span class="key">Click</span>: add that polygon</div>
+      <div><span class="key">Shift</span> + click/lasso: toggle (add or remove)</div>
+      <div><b>Default</b> behavior: selections <span class="key">append</span> (nothing is replaced).</div>
+      <div style="margin-top:6px;"><b>Only</b> <span class="key">ooipsectiongrid</span> is selectable.</div>
     </div>
 
     <button id="exportBtn" class="btn" disabled>Export CSV</button>
@@ -127,10 +124,6 @@
   <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 
   <script>
-    /* -------------------------------------------------
-       CONFIGURATION – list every zipped shapefile you want
-       Only ooipsectiongrid is selectable.
-       ------------------------------------------------- */
     const shapefileUrls = [
       "data/ooipsectiongrid.zip",
       "data/Bakken Units.zip",
@@ -139,26 +132,17 @@
 
     const selectableUrl = "data/ooipsectiongrid.zip";
 
-    /* -------------------------------------------------
-       MAP INITIALISATION
-       ------------------------------------------------- */
     const map = L.map('map').setView([51.05, -114.07], 10);
-
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
-    // Ensure selectable layer renders "on top"
     map.createPane('selectPane');
     map.getPane('selectPane').style.zIndex = 650;
 
-    /* -------------------------------------------------
-       STATE & HELPERS
-       ------------------------------------------------- */
     // id → { feature, layer }
     let selected = new Map();
 
-    // For lasso performance: store turf features only for ooipsectiongrid
     // id → { layer, feature, turfFeature }
     let gridIndex = new Map();
 
@@ -171,7 +155,6 @@
     const getId = (feature) => {
       if (feature?.id != null) return String(feature.id);
       const p = feature?.properties || {};
-      // Prefer common stable keys if present
       const candidates = ["id", "ID", "OBJECTID", "FID", "Fid", "grid_id", "section_id", "name"];
       for (const k of candidates) if (p[k] != null) return String(p[k]);
       return JSON.stringify(p);
@@ -185,7 +168,6 @@
     function makeTooltipContent(props) {
       const p = props || {};
       const entries = Object.entries(p);
-      // Show a compact list of attributes
       const max = 8;
       const items = entries.slice(0, max).map(([k, v]) => `
         <div><b>${k}</b>: ${truncate(v, 120)}</div>
@@ -194,10 +176,7 @@
       return `<div>${items}${more}</div>`;
     }
 
-    /* ---- Persistence ---- */
     function saveSelection() {
-      // Store minimal: only properties+geometry serialized from selected features
-      // (selected Map values are GeoJSON-like features)
       const payload = [...selected.values()].map(x => x.feature);
       localStorage.setItem("selectedFeatures", JSON.stringify(payload));
     }
@@ -210,14 +189,13 @@
         const list = JSON.parse(data);
         for (const f of list) {
           const id = getId(f);
-          selected.set(id, { feature: f, layer: null }); // layer filled after load
+          selected.set(id, { feature: f, layer: null });
         }
       } catch (e) {
         console.warn("Failed to parse saved selection:", e);
       }
     }
 
-    /* ---- UI ---- */
     function updateUI() {
       const count = selected.size;
       document.getElementById("countBadge").textContent = `${count} selected`;
@@ -231,12 +209,10 @@
         document.getElementById("tableContainer").textContent = "No selection";
         return;
       }
+
       status.textContent = `Selected ${count} polygon${count === 1 ? "" : "s"} from ooipsectiongrid.`;
 
-      const features = [...selected.values()]
-        .map(x => x.feature)
-        .filter(Boolean);
-
+      const features = [...selected.values()].map(x => x.feature).filter(Boolean);
       if (!features.length) {
         document.getElementById("tableContainer").textContent = "No selection";
         return;
@@ -256,7 +232,6 @@
       document.getElementById("tableContainer").innerHTML = html;
     }
 
-    /* ---- CSV export ---- */
     function downloadCSV() {
       if (selected.size === 0) return;
 
@@ -264,7 +239,6 @@
       const keys = Object.keys(features[0].properties || {});
       if (keys.length === 0) return alert("Selected features have no properties to export.");
 
-      // Simple CSV escaping
       const escapeCell = (v) => {
         const s = (v == null) ? "" : String(v);
         return `"${s.replace(/"/g, '""')}"`;
@@ -284,12 +258,6 @@
       URL.revokeObjectURL(url);
     }
 
-    /* -------------------------------------------------
-       SELECTION RULES
-       - Only ooipsectiongrid is selectable.
-       - Other shapefiles are display-only.
-       - Shift key adds/toggles; no-shift replaces selection.
-       ------------------------------------------------- */
     function applySelectionStyle(layer, isSelected) {
       if (!layer) return;
       if (isSelected) layer.setStyle(styles.selected);
@@ -297,6 +265,7 @@
     }
 
     function addToSelection(id, feature, layer) {
+      if (selected.has(id)) return; // foolproof: avoid duplicates
       selected.set(id, { feature, layer });
       applySelectionStyle(layer, true);
     }
@@ -308,44 +277,29 @@
     }
 
     function clearSelection() {
-      for (const id of selected.keys()) removeFromSelection(id);
+      for (const id of [...selected.keys()]) removeFromSelection(id);
       selected.clear();
       saveSelection();
       updateUI();
     }
 
     function syncSavedSelectionStyles() {
-      // After layers load, re-attach saved selection to layers.
       for (const [id, item] of selected.entries()) {
-        // layer is filled via gridIndex lookup below
         const grid = gridIndex.get(id);
         if (grid) {
           item.layer = grid.layer;
           applySelectionStyle(grid.layer, true);
         } else {
-          // If the feature isn't present anymore, drop it.
           selected.delete(id);
         }
       }
     }
 
-    function selectionFromGridIds(ids, mode /* "replace"|"add" */) {
-      if (mode === "replace") {
-        // Replace current selection with these ids
-        // Remove any that are not in the new set
-        const next = new Set(ids);
-        for (const id of [...selected.keys()]) {
-          if (!next.has(id)) removeFromSelection(id);
-        }
-        // Add new ones
-        for (const id of next) {
-          if (!selected.has(id)) {
-            const entry = gridIndex.get(id);
-            if (entry) addToSelection(id, entry.feature, entry.layer);
-          }
-        }
-      } else {
-        // add/toggle mode
+    // IMPORTANT CHANGE:
+    // - Default (no Shift): always ADD/APPEND (never replace)
+    // - Shift: toggle (add if missing; remove if already selected)
+    function selectionFromGridIds(ids, { shiftToggle }) {
+      if (shiftToggle) {
         for (const id of ids) {
           if (selected.has(id)) removeFromSelection(id);
           else {
@@ -353,165 +307,36 @@
             if (entry) addToSelection(id, entry.feature, entry.layer);
           }
         }
+      } else {
+        for (const id of ids) {
+          if (!selected.has(id)) {
+            const entry = gridIndex.get(id);
+            if (entry) addToSelection(id, entry.feature, entry.layer);
+          }
+        }
       }
       saveSelection();
       updateUI();
     }
 
-    /* -------------------------------------------------
-       LOAD SHAPEFILES (auto-load all ZIPs)
-       - Add all layers to map
-       - Only ooipsectiongrid layers are interactive/selectable
-       - ooipsectiongrid is put in selectPane (on top)
-       ------------------------------------------------- */
-    loadSelection();
-
-    function loadShapefile(url) {
-      return shp(url).then((geojson) => {
-        const isGrid = url === selectableUrl;
-
-        return L.geoJSON(geojson, {
-          pane: isGrid ? "selectPane" : undefined,
-          style: styles.default,
-          onEachFeature: (feature, layer) => {
-            const id = getId(feature);
-
-            if (!isGrid) {
-              // Display-only layers: no selection, no click, no tooltip
-              layer.off();
-              layer.on({
-                mouseover() { /* keep default hover off for non-selectable */ },
-                mouseout() { /* keep default */ }
-              });
-              return;
-            }
-
-            // Selectable layer: hover tooltips + click selection
-            gridIndex.set(id, { layer, feature, turfFeature: null });
-
-            // Restore saved selection immediately (styles; layer is selectable)
-            if (selected.has(id)) applySelectionStyle(layer, true);
-
-            // Tooltips with attributes (uses data from properties)
-            // Also add "attributes" as HTML data-* if you want later
-            const props = feature?.properties || {};
-            const tt = makeTooltipContent(props);
-
-            layer.bindTooltip(tt, {
-              sticky: true,
-              direction: "auto",
-              opacity: 0.95
-            });
-
-            layer.on({
-              mouseover() {
-                if (!selected.has(id)) layer.setStyle(styles.hover);
-              },
-              mouseout() {
-                if (!selected.has(id)) layer.setStyle(styles.default);
-              },
-              click(e) {
-                // Prevent click during lasso
-                if (lassoState.active) return;
-
-                const mode = e.originalEvent.shiftKey ? "add" : "replace";
-
-                if (mode === "replace") {
-                  // Clicking should select only this feature when shift is NOT held
-                  selectionFromGridIds([id], "replace");
-                } else {
-                  // Shift click toggles this feature
-                  selectionFromGridIds([id], "add");
-                }
-              }
-            });
-          }
-        });
-      });
-    }
-
-    // Load all files, but ensure ooipsectiongrid is added after others for top rendering too.
-    // (We also use pane to be safe.)
-    const otherUrls = shapefileUrls.filter(u => u !== selectableUrl);
-    const gridUrls = shapefileUrls.filter(u => u === selectableUrl);
-
-    // Load others first
-    Promise.all(otherUrls.map(loadShapefile))
-      .then((otherLayers) => {
-        const fgOther = L.featureGroup(otherLayers);
-        fgOther.addTo(map);
-
-        // Load grid last (selectable on top)
-        return Promise.all(gridUrls.map(loadShapefile));
-      })
-      .then((gridLayers) => {
-        const gridLayer = L.featureGroup(gridLayers);
-        gridLayer.addTo(map);
-
-        // Ensure we fit bounds to all layers
-        const allBounds = gridLayer.getBounds();
-        // If there are other layers, include their bounds
-        // (featureGroup above for others isn't retained here, so we compute from layers that are on map)
-        map.eachLayer((layer) => {
-          if (layer?.getBounds) {
-            const b = layer.getBounds();
-            if (b && b.isValid && allBounds) allBounds.extend(b);
-            else if (b && b.isValid) {
-              // no-op
-            }
-          }
-        });
-        if (allBounds && allBounds.isValid) map.fitBounds(allBounds, { padding: [20, 20] });
-
-        // Precompute turf polygons only for gridIndex (for lasso intersection tests)
-        // turfFeature is cached by id.
-        for (const [id, entry] of gridIndex.entries()) {
-          try {
-            // feature is already GeoJSON-like from shpjs
-            gridIndex.set(id, { ...entry, turfFeature: turf.feature(entry.feature.geometry, entry.feature.properties) });
-          } catch (e) {
-            console.warn("Turf feature build failed for", id, e);
-          }
-        }
-
-        // Sync saved selection styles/layers
-        syncSavedSelectionStyles();
-        updateUI();
-      })
-      .catch((err) => {
-        console.error("Failed to load one or more shapefiles:", err);
-        alert("Error loading shapefiles – see console for details.");
-      });
-
-    /* -------------------------------------------------
-       LASSO SELECTION (freehand)
-       - Only selects ooipsectiongrid (gridIndex)
-       - Shift: add/toggle
-       - No shift: replace selection
-       ------------------------------------------------- */
+    // --- Lasso State ---
     const lassoState = {
       active: false,
       shiftKey: false,
       points: [],
-      polyline: null,
-      finishHandlerBound: false
+      polyline: null
     };
 
     function latLngsToClosedCoords(latlngs) {
-      // turf expects [lng, lat] and polygon ring closure
       const coords = latlngs.map(ll => [ll.lng, ll.lat]);
       if (coords.length < 3) return null;
-      // close ring
       const first = coords[0];
       const last = coords[coords.length - 1];
       if (first[0] !== last[0] || first[1] !== last[1]) coords.push(first);
       return coords;
     }
 
-    // Remove small jitter / reduce points
     function simplifyLatLngs(latlngs, toleranceMeters = 6) {
-      // Simple approach: keep points that moved enough in screen/latlon.
-      // For robustness, tolerance in degrees isn't good; we approximate with Turf distance.
       if (latlngs.length <= 2) return latlngs;
 
       const kept = [latlngs[0]];
@@ -527,14 +352,108 @@
           last = now;
         }
       }
-      if (kept.length < 3) return latlngs;
-      return kept;
+      return kept.length < 3 ? latlngs : kept;
     }
 
+    loadSelection();
+
+    function loadShapefile(url) {
+      return shp(url).then((geojson) => {
+        const isGrid = url === selectableUrl;
+
+        return L.geoJSON(geojson, {
+          pane: isGrid ? "selectPane" : undefined,
+          style: styles.default,
+          onEachFeature: (feature, layer) => {
+            const id = getId(feature);
+
+            if (!isGrid) {
+              // Display-only: no selection
+              layer.off();
+              return;
+            }
+
+            // Selectable
+            gridIndex.set(id, { layer, feature, turfFeature: null });
+
+            if (selected.has(id)) applySelectionStyle(layer, true);
+
+            // Tooltips with attributes
+            layer.bindTooltip(makeTooltipContent(feature?.properties), {
+              sticky: true,
+              direction: "auto",
+              opacity: 0.95
+            });
+
+            layer.on({
+              mouseover() {
+                if (!selected.has(id)) layer.setStyle(styles.hover);
+              },
+              mouseout() {
+                if (!selected.has(id)) layer.setStyle(styles.default);
+              },
+              click(e) {
+                if (lassoState.active) return;
+
+                const shiftToggle = !!e.originalEvent.shiftKey;
+                selectionFromGridIds([id], { shiftToggle });
+              }
+            });
+          }
+        });
+      });
+    }
+
+    // Load others first, grid last (top)
+    const otherUrls = shapefileUrls.filter(u => u !== selectableUrl);
+    const gridUrls = shapefileUrls.filter(u => u === selectableUrl);
+
+    Promise.all(otherUrls.map(loadShapefile))
+      .then((otherLayers) => {
+        L.featureGroup(otherLayers).addTo(map);
+        return Promise.all(gridUrls.map(loadShapefile));
+      })
+      .then((gridLayers) => {
+        L.featureGroup(gridLayers).addTo(map);
+
+        // Fit bounds using all visible layers' bounds
+        let bounds = null;
+        map.eachLayer(layer => {
+          if (typeof layer.getBounds === "function") {
+            const b = layer.getBounds();
+            if (b && b.isValid()) {
+              if (!bounds) bounds = b;
+              else bounds.extend(b);
+            }
+          }
+        });
+        if (bounds) map.fitBounds(bounds, { padding: [20, 20] });
+
+        // Precompute turf polygons for ooipsectiongrid only
+        for (const [id, entry] of gridIndex.entries()) {
+          try {
+            gridIndex.set(id, {
+              ...entry,
+              turfFeature: turf.feature(entry.feature.geometry, entry.feature.properties)
+            });
+          } catch (e) {
+            console.warn("Turf feature build failed for", id, e);
+          }
+        }
+
+        syncSavedSelectionStyles();
+        updateUI();
+      })
+      .catch((err) => {
+        console.error("Failed to load one or more shapefiles:", err);
+        alert("Error loading shapefiles – see console for details.");
+      });
+
+    // Lasso handlers
     function startLasso(e) {
-      // Only left mouse button
       if (e.originalEvent?.button !== 0) return;
-      if (e.originalEvent?.target && e.originalEvent.target.closest && e.originalEvent.target.closest("#panel")) return;
+      // Don't start lasso when interacting with sidebar
+      if (e.originalEvent?.target?.closest?.("#panel")) return;
 
       lassoState.active = true;
       lassoState.shiftKey = !!e.originalEvent.shiftKey;
@@ -567,7 +486,6 @@
 
       map.dragging.enable();
 
-      // Clean up the polyline
       if (lassoState.polyline) {
         map.removeLayer(lassoState.polyline);
         lassoState.polyline = null;
@@ -576,81 +494,64 @@
       const rawPoints = lassoState.points.slice();
       lassoState.points = [];
 
-      // Need at least 3 points
       if (rawPoints.length < 3) return;
 
       const points = simplifyLatLngs(rawPoints, 5);
       const ring = latLngsToClosedCoords(points);
       if (!ring) return;
 
-      // Build lasso polygon feature
       let lassoFeature;
       try {
         lassoFeature = turf.polygon([ring], { type: "lasso" });
-      } catch (e) {
-        console.warn("Invalid lasso polygon:", e);
+      } catch {
         return;
       }
 
-      // Determine mode: shift => add/toggle, no shift => replace selection
-      const mode = lassoState.shiftKey ? "add" : "replace";
-
-      // Intersect lasso with ooipsectiongrid polygons only
       const matchedIds = [];
       for (const [id, entry] of gridIndex.entries()) {
         const t = entry.turfFeature;
         if (!t) continue;
 
-        // quick bbox check
         const bb1 = turf.bbox(t);
         const bb2 = turf.bbox(lassoFeature);
-        // (bbox intersection test)
+
         const intersectsBbox =
           !(bb1[0] > bb2[2] || bb1[2] < bb2[0] || bb1[1] > bb2[3] || bb1[3] < bb2[1]);
         if (!intersectsBbox) continue;
 
-        // robust polygon intersection
         try {
-          if (turf.booleanIntersects(t, lassoFeature) || turf.booleanContains(t, lassoFeature) || turf.booleanContains(lassoFeature, t)) {
+          if (turf.booleanIntersects(t, lassoFeature) ||
+              turf.booleanContains(t, lassoFeature) ||
+              turf.booleanContains(lassoFeature, t)) {
             matchedIds.push(id);
           }
-        } catch (e) {
-          // If boolean ops fail, skip this polygon
-          console.warn("Intersection test failed for", id, e);
+        } catch {
+          // ignore failed geometry ops
         }
       }
 
-      if (matchedIds.length === 0) {
-        // If no matches and mode is replace, clear selection to feel "foolproof"
-        // If you prefer "keep old selection when no matches", comment this out.
-        if (mode === "replace") clearSelection();
-        return;
-      }
+      // IMPORTANT CHANGE:
+      // - Default behavior is append (never clear/replace).
+      // - If none matched, do nothing.
+      if (matchedIds.length === 0) return;
 
-      selectionFromGridIds(matchedIds, mode);
+      selectionFromGridIds(matchedIds, { shiftToggle: lassoState.shiftKey });
     }
 
-    // Lasso drag handlers
     map.on('mousedown', startLasso);
     map.on('mousemove', moveLasso);
     map.on('mouseup', finishLasso);
     map.on('mouseout', () => {
-      // If mouse leaves canvas while dragging, don't get stuck
       if (lassoState.active) finishLasso();
     });
 
-    /* -------------------------------------------------
-       UI EVENTS
-       ------------------------------------------------- */
+    // UI events
     document.getElementById("exportBtn").onclick = downloadCSV;
     document.getElementById("clearBtn").onclick = () => {
       clearSelection();
-      // optional: keep localStorage clean
       localStorage.removeItem("selectedFeatures");
-      // styles already reset via clearSelection()
     };
 
-    // Extra: keyboard convenience (Escape clears lasso/selection? Here: Escape clears selection)
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         if (lassoState.active) {
