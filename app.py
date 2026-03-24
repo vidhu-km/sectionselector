@@ -1,9 +1,5 @@
-import streamlit as st
 import geopandas as gpd
 import folium
-from streamlit_folium import st_folium
-
-st.title("Polygon Selector")
 
 # Load shapefile
 gdf = gpd.read_file("ooipsectiongrid.shp")
@@ -12,12 +8,8 @@ gdf = gpd.read_file("ooipsectiongrid.shp")
 if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
     gdf = gdf.to_crs(epsg=4326)
 
-# Add ID column
+# Add ID
 gdf = gdf.reset_index().rename(columns={"index": "id"})
-
-# Store selected polygons
-if "selected" not in st.session_state:
-    st.session_state.selected = set()
 
 # Center map
 centroid = gdf.geometry.centroid
@@ -27,62 +19,52 @@ m = folium.Map(location=center, zoom_start=10)
 
 # Style function
 def style_function(feature):
-    idx = feature["properties"]["id"]
-    if idx in st.session_state.selected:
-        return {"color": "red", "weight": 3, "fillOpacity": 0.5}
-    return {"color": "blue", "weight": 1, "fillOpacity": 0.2}
+    return {
+        "color": "blue",
+        "weight": 1,
+        "fillOpacity": 0.3,
+    }
 
-# JavaScript click handler
-click_js = """
-function(feature, layer) {
-    layer.on('click', function(e) {
-        // Send clicked feature id back to Streamlit
-        window.parent.postMessage({
-            "type": "folium_click",
-            "id": feature.properties.id
-        }, "*");
-    });
-}
-"""
-
+# Add GeoJson with click behavior
 geo = folium.GeoJson(
     gdf,
     style_function=style_function,
     tooltip=folium.GeoJsonTooltip(
         fields=[col for col in gdf.columns if col != "geometry"]
-    ),
-    on_each_feature=click_js
+    )
 )
 
 geo.add_to(m)
 
-# Render map
-map_data = st_folium(m, height=600, width=800)
+# Add JavaScript for click-to-toggle highlight
+click_js = """
+function(e) {
+    var layer = e.target;
 
-# Capture click from message
-if map_data and "last_object_clicked" in map_data:
-    clicked = map_data["last_object_clicked"]
+    if (layer.selected) {
+        layer.setStyle({color: 'blue', fillOpacity: 0.3});
+        layer.selected = false;
+    } else {
+        layer.setStyle({color: 'red', fillOpacity: 0.6});
+        layer.selected = true;
+    }
+}
+"""
 
-    if clicked and "id" in clicked:
-        clicked_id = clicked["id"]
-
-        if clicked_id in st.session_state.selected:
-            st.session_state.selected.remove(clicked_id)
-        else:
-            st.session_state.selected.add(clicked_id)
-
-# Show selected polygons
-if st.session_state.selected:
-    selected_df = gdf[gdf["id"].isin(st.session_state.selected)]
-
-    st.write("Selected polygons:")
-    st.dataframe(selected_df.drop(columns="geometry"))
-
-    csv = selected_df.drop(columns="geometry").to_csv(index=False)
-
-    st.download_button(
-        "Download CSV",
-        csv,
-        file_name="selected_polygons.csv",
-        mime="text/csv"
+# Attach click handler to each feature
+for feature in geo.data['features']:
+    layer = folium.GeoJson(
+        feature,
+        style_function=style_function
     )
+    layer.add_to(m)
+    layer.add_child(folium.features.GeoJsonPopup(fields=list(gdf.columns)))
+    layer.add_child(folium.GeoJsonTooltip(fields=list(gdf.columns)))
+    layer.add_child(folium.Element(
+        f"<script>{click_js}</script>"
+    ))
+
+# Save map
+m.save("map.html")
+
+print("Map saved as map.html. Open it in your browser.")
