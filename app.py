@@ -6,7 +6,7 @@ from streamlit_folium import st_folium
 st.title("Polygon Selector")
 
 # Load shapefile
-gdf = gpd.read_file("sectiongrid.shp")
+gdf = gpd.read_file("ooipsectiongrid.shp")
 
 # Ensure CRS is lat/lon for web maps
 if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
