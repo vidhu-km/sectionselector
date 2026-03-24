@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Selection/Export – ooipsectiongrid only (Lasso + Shift)</title>
+  <title>Selection/Export – ooipsectiongrid only (Lasso + Additive)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -107,8 +107,7 @@
     <div class="hint">
       <div><span class="key">Lasso</span>: drag on the map</div>
       <div><span class="key">Click</span>: add that polygon</div>
-      <div><span class="key">Shift</span> + click/lasso: toggle (add or remove)</div>
-      <div><b>Default</b> behavior: selections <span class="key">append</span> (nothing is replaced).</div>
+      <div><b>Behavior:</b> all clicks and lassos <span class="key">always append</span> (no replace).</div>
       <div style="margin-top:6px;"><b>Only</b> <span class="key">ooipsectiongrid</span> is selectable.</div>
     </div>
 
@@ -137,13 +136,14 @@
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
+    // Put selectable layer on top
     map.createPane('selectPane');
     map.getPane('selectPane').style.zIndex = 650;
 
-    // id → { feature, layer }
+    // selected: id -> { feature, layer }
     let selected = new Map();
 
-    // id → { layer, feature, turfFeature }
+    // gridIndex: id -> { layer, feature, turfFeature }
     let gridIndex = new Map();
 
     const styles = {
@@ -177,6 +177,7 @@
     }
 
     function saveSelection() {
+      // Store the GeoJSON features selected (for easy restore)
       const payload = [...selected.values()].map(x => x.feature);
       localStorage.setItem("selectedFeatures", JSON.stringify(payload));
     }
@@ -213,22 +214,17 @@
       status.textContent = `Selected ${count} polygon${count === 1 ? "" : "s"} from ooipsectiongrid.`;
 
       const features = [...selected.values()].map(x => x.feature).filter(Boolean);
-      if (!features.length) {
-        document.getElementById("tableContainer").textContent = "No selection";
-        return;
-      }
-
       const keys = Object.keys(features[0].properties || {});
+
       let html = "<table><thead><tr>";
       html += keys.map(k => `<th>${k}</th>`).join("");
       html += "</tr></thead><tbody>";
-
       html += features.map(f => {
         const props = f.properties || {};
         return `<tr>${keys.map(k => `<td>${props[k] ?? ""}</td>`).join("")}</tr>`;
       }).join("");
-
       html += "</tbody></table>";
+
       document.getElementById("tableContainer").innerHTML = html;
     }
 
@@ -260,12 +256,12 @@
 
     function applySelectionStyle(layer, isSelected) {
       if (!layer) return;
-      if (isSelected) layer.setStyle(styles.selected);
-      else layer.setStyle(styles.default);
+      layer.setStyle(isSelected ? styles.selected : styles.default);
     }
 
     function addToSelection(id, feature, layer) {
-      if (selected.has(id)) return; // foolproof: avoid duplicates
+      // Foolproof: never duplicate
+      if (selected.has(id)) return;
       selected.set(id, { feature, layer });
       applySelectionStyle(layer, true);
     }
@@ -295,66 +291,23 @@
       }
     }
 
-    // IMPORTANT CHANGE:
-    // - Default (no Shift): always ADD/APPEND (never replace)
-    // - Shift: toggle (add if missing; remove if already selected)
-    function selectionFromGridIds(ids, { shiftToggle }) {
-      if (shiftToggle) {
-        for (const id of ids) {
-          if (selected.has(id)) removeFromSelection(id);
-          else {
-            const entry = gridIndex.get(id);
-            if (entry) addToSelection(id, entry.feature, entry.layer);
-          }
-        }
-      } else {
-        for (const id of ids) {
-          if (!selected.has(id)) {
-            const entry = gridIndex.get(id);
-            if (entry) addToSelection(id, entry.feature, entry.layer);
-          }
+    function addSelectionIds(ids) {
+      let changed = false;
+      for (const id of ids) {
+        const entry = gridIndex.get(id);
+        if (!entry) continue;
+        if (!selected.has(id)) {
+          addToSelection(id, entry.feature, entry.layer);
+          changed = true;
         }
       }
-      saveSelection();
-      updateUI();
-    }
-
-    // --- Lasso State ---
-    const lassoState = {
-      active: false,
-      shiftKey: false,
-      points: [],
-      polyline: null
-    };
-
-    function latLngsToClosedCoords(latlngs) {
-      const coords = latlngs.map(ll => [ll.lng, ll.lat]);
-      if (coords.length < 3) return null;
-      const first = coords[0];
-      const last = coords[coords.length - 1];
-      if (first[0] !== last[0] || first[1] !== last[1]) coords.push(first);
-      return coords;
-    }
-
-    function simplifyLatLngs(latlngs, toleranceMeters = 6) {
-      if (latlngs.length <= 2) return latlngs;
-
-      const kept = [latlngs[0]];
-      let last = latlngs[0];
-
-      for (let i = 1; i < latlngs.length; i++) {
-        const now = latlngs[i];
-        const from = turf.point([last.lng, last.lat]);
-        const to = turf.point([now.lng, now.lat]);
-        const d = turf.distance(from, to, { units: "meters" });
-        if (d >= toleranceMeters) {
-          kept.push(now);
-          last = now;
-        }
+      if (changed) {
+        saveSelection();
+        updateUI();
       }
-      return kept.length < 3 ? latlngs : kept;
     }
 
+    // --------- Load shapefiles ---------
     loadSelection();
 
     function loadShapefile(url) {
@@ -368,23 +321,24 @@
             const id = getId(feature);
 
             if (!isGrid) {
-              // Display-only: no selection
+              // Display-only: no selection, no tooltip, no interactivity
               layer.off();
               return;
             }
 
-            // Selectable
+            // Selectable ooipsectiongrid
             gridIndex.set(id, { layer, feature, turfFeature: null });
 
             if (selected.has(id)) applySelectionStyle(layer, true);
 
-            // Tooltips with attributes
+            // Tooltip with attributes + helpful attributes for future debugging
             layer.bindTooltip(makeTooltipContent(feature?.properties), {
               sticky: true,
               direction: "auto",
               opacity: 0.95
             });
 
+            // Click always appends (no replace, no shift requirement)
             layer.on({
               mouseover() {
                 if (!selected.has(id)) layer.setStyle(styles.hover);
@@ -393,10 +347,9 @@
                 if (!selected.has(id)) layer.setStyle(styles.default);
               },
               click(e) {
+                // prevent lasso race
                 if (lassoState.active) return;
-
-                const shiftToggle = !!e.originalEvent.shiftKey;
-                selectionFromGridIds([id], { shiftToggle });
+                addSelectionIds([id]);
               }
             });
           }
@@ -404,7 +357,6 @@
       });
     }
 
-    // Load others first, grid last (top)
     const otherUrls = shapefileUrls.filter(u => u !== selectableUrl);
     const gridUrls = shapefileUrls.filter(u => u === selectableUrl);
 
@@ -416,7 +368,7 @@
       .then((gridLayers) => {
         L.featureGroup(gridLayers).addTo(map);
 
-        // Fit bounds using all visible layers' bounds
+        // Fit bounds across everything currently loaded
         let bounds = null;
         map.eachLayer(layer => {
           if (typeof layer.getBounds === "function") {
@@ -449,14 +401,48 @@
         alert("Error loading shapefiles – see console for details.");
       });
 
-    // Lasso handlers
+    // --------- Lasso (additive) ---------
+    const lassoState = {
+      active: false,
+      points: [],
+      polyline: null
+    };
+
+    function latLngsToClosedCoords(latlngs) {
+      const coords = latlngs.map(ll => [ll.lng, ll.lat]); // [lng, lat]
+      if (coords.length < 3) return null;
+      const first = coords[0];
+      const last = coords[coords.length - 1];
+      if (first[0] !== last[0] || first[1] !== last[1]) coords.push(first);
+      return coords;
+    }
+
+    function simplifyLatLngs(latlngs, toleranceMeters = 6) {
+      if (latlngs.length <= 2) return latlngs;
+
+      const kept = [latlngs[0]];
+      let last = latlngs[0];
+
+      for (let i = 1; i < latlngs.length; i++) {
+        const now = latlngs[i];
+        const from = turf.point([last.lng, last.lat]);
+        const to = turf.point([now.lng, now.lat]);
+        const d = turf.distance(from, to, { units: "meters" });
+        if (d >= toleranceMeters) {
+          kept.push(now);
+          last = now;
+        }
+      }
+      return kept.length < 3 ? latlngs : kept;
+    }
+
     function startLasso(e) {
-      if (e.originalEvent?.button !== 0) return;
-      // Don't start lasso when interacting with sidebar
+      if (e.originalEvent?.button !== 0) return; // left mouse only
+
+      // Don't start lasso when interacting with the sidebar
       if (e.originalEvent?.target?.closest?.("#panel")) return;
 
       lassoState.active = true;
-      lassoState.shiftKey = !!e.originalEvent.shiftKey;
       lassoState.points = [e.latlng];
 
       map.dragging.disable();
@@ -508,17 +494,19 @@
       }
 
       const matchedIds = [];
+
       for (const [id, entry] of gridIndex.entries()) {
         const t = entry.turfFeature;
         if (!t) continue;
 
+        // bbox quick reject
         const bb1 = turf.bbox(t);
         const bb2 = turf.bbox(lassoFeature);
-
         const intersectsBbox =
           !(bb1[0] > bb2[2] || bb1[2] < bb2[0] || bb1[1] > bb2[3] || bb1[3] < bb2[1]);
         if (!intersectsBbox) continue;
 
+        // Intersection test
         try {
           if (turf.booleanIntersects(t, lassoFeature) ||
               turf.booleanContains(t, lassoFeature) ||
@@ -526,16 +514,12 @@
             matchedIds.push(id);
           }
         } catch {
-          // ignore failed geometry ops
+          // ignore geometry failures for that polygon
         }
       }
 
-      // IMPORTANT CHANGE:
-      // - Default behavior is append (never clear/replace).
-      // - If none matched, do nothing.
-      if (matchedIds.length === 0) return;
-
-      selectionFromGridIds(matchedIds, { shiftToggle: lassoState.shiftKey });
+      // Additive: always append (no replace). If none matched, do nothing.
+      if (matchedIds.length) addSelectionIds(matchedIds);
     }
 
     map.on('mousedown', startLasso);
@@ -545,7 +529,7 @@
       if (lassoState.active) finishLasso();
     });
 
-    // UI events
+    // --------- UI events ---------
     document.getElementById("exportBtn").onclick = downloadCSV;
     document.getElementById("clearBtn").onclick = () => {
       clearSelection();
@@ -558,11 +542,12 @@
           lassoState.active = false;
           if (lassoState.polyline) map.removeLayer(lassoState.polyline);
           lassoState.polyline = null;
-          map.dragging.enable();
           lassoState.points = [];
+          map.dragging.enable();
           return;
         }
         clearSelection();
+        localStorage.removeItem("selectedFeatures");
       }
     });
   </script>
