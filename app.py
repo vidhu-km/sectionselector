@@ -8,22 +8,21 @@ st.title("Polygon Selector")
 # Load shapefile
 gdf = gpd.read_file("ooipsectiongrid.shp")
 
-# Ensure CRS is lat/lon for web maps
+# Ensure CRS is lat/lon
 if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
     gdf = gdf.to_crs(epsg=4326)
 
-# Add a proper ID column
+# Add ID column
 gdf = gdf.reset_index().rename(columns={"index": "id"})
 
-# Store selected indices
+# Store selected polygons
 if "selected" not in st.session_state:
     st.session_state.selected = set()
 
-# Compute map center safely
+# Center map
 centroid = gdf.geometry.centroid
 center = [centroid.y.mean(), centroid.x.mean()]
 
-# Create map
 m = folium.Map(location=center, zoom_start=10)
 
 # Style function
@@ -33,14 +32,26 @@ def style_function(feature):
         return {"color": "red", "weight": 3, "fillOpacity": 0.5}
     return {"color": "blue", "weight": 1, "fillOpacity": 0.2}
 
-# Add GeoJSON layer (exclude geometry from tooltip)
+# JavaScript click handler
+click_js = """
+function(feature, layer) {
+    layer.on('click', function(e) {
+        // Send clicked feature id back to Streamlit
+        window.parent.postMessage({
+            "type": "folium_click",
+            "id": feature.properties.id
+        }, "*");
+    });
+}
+"""
+
 geo = folium.GeoJson(
     gdf,
     style_function=style_function,
     tooltip=folium.GeoJsonTooltip(
         fields=[col for col in gdf.columns if col != "geometry"]
     ),
-    name="Polygons"
+    on_each_feature=click_js
 )
 
 geo.add_to(m)
@@ -48,17 +59,17 @@ geo.add_to(m)
 # Render map
 map_data = st_folium(m, height=600, width=800)
 
-# Handle clicks
-if map_data and map_data.get("last_active_drawing"):
-    clicked = map_data["last_active_drawing"]
+# Capture click from message
+if map_data and "last_object_clicked" in map_data:
+    clicked = map_data["last_object_clicked"]
 
-    # Get ID from properties (important!)
-    clicked_idx = clicked["properties"]["id"]
+    if clicked and "id" in clicked:
+        clicked_id = clicked["id"]
 
-    if clicked_idx in st.session_state.selected:
-        st.session_state.selected.remove(clicked_idx)
-    else:
-        st.session_state.selected.add(clicked_idx)
+        if clicked_id in st.session_state.selected:
+            st.session_state.selected.remove(clicked_id)
+        else:
+            st.session_state.selected.add(clicked_id)
 
 # Show selected polygons
 if st.session_state.selected:
