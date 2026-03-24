@@ -345,7 +345,7 @@
       }
     }
 
-    // ---- TOGGLE SELECTION (click and lasso both toggle) ----
+    // ---- TOGGLE SELECTION (click and marker-draw both toggle) ----
     function toggleId(id) {
       const entry = gridIndex.get(id);
       if (!entry) return;
@@ -419,7 +419,8 @@
                 if (!selected.has(id)) layer.setStyle(styles.default);
               },
               click(e) {
-                if (lassoState.active) return;
+                // If a marker-draw is active, ignore click toggles to avoid conflicts
+                if (markerState.active) return;
                 toggleIds([id]); // click toggles
               }
             });
@@ -472,58 +473,32 @@
         alert("Error loading shapefiles – see console for details.");
       });
 
-    // ---------------- LASSO (freehand) ----------------
-    const lassoState = {
+    // ---------------- MARKER DRAG SELECTION ----------------
+    const markerState = {
       active: false,
       points: [],
-      polyline: null
+      polyline: null,
+      toggledThisDrag: new Set()
     };
 
-    function latLngsToClosedCoords(latlngs) {
-      const coords = latlngs.map(ll => [ll.lng, ll.lat]); // [lng, lat]
-      if (coords.length < 3) return null;
-      const first = coords[0];
-      const last = coords[coords.length - 1];
-      if (first[0] !== last[0] || first[1] !== last[1]) coords.push(first);
-      return coords;
-    }
+    function startMarkerDraw(e) {
+      if (e.originalEvent?.button !== 0) return; // left-click only
 
-    function simplifyLatLngs(latlngs, toleranceMeters = 6) {
-      if (latlngs.length <= 2) return latlngs;
-
-      const kept = [latlngs[0]];
-      let last = latlngs[0];
-
-      for (let i = 1; i < latlngs.length; i++) {
-        const now = latlngs[i];
-        const from = turf.point([last.lng, last.lat]);
-        const to = turf.point([now.lng, now.lat]);
-        const d = turf.distance(from, to, { units: "meters" });
-        if (d >= toleranceMeters) {
-          kept.push(now);
-          last = now;
-        }
-      }
-      return kept.length < 3 ? latlngs : kept;
-    }
-
-    function startLasso(e) {
-      if (e.originalEvent?.button !== 0) return; // left mouse only
-
-      // Don't start lasso when interacting with sidebar
+      // Don't start drawing when interacting with the panel
       if (e.originalEvent?.target?.closest?.("#panel")) return;
 
-      lassoState.active = true;
-      lassoState.points = [e.latlng];
+      markerState.active = true;
+      markerState.points = [e.latlng];
+      markerState.toggledThisDrag.clear();
 
       map.dragging.disable();
 
-      if (lassoState.polyline) {
-        map.removeLayer(lassoState.polyline);
-        lassoState.polyline = null;
+      if (markerState.polyline) {
+        map.removeLayer(markerState.polyline);
+        markerState.polyline = null;
       }
 
-      lassoState.polyline = L.polyline(lassoState.points, {
+      markerState.polyline = L.polyline(markerState.points, {
         color: "#ff3b3b",
         weight: 2,
         opacity: 0.9,
@@ -531,75 +506,54 @@
       }).addTo(map);
     }
 
-    function moveLasso(e) {
-      if (!lassoState.active) return;
-      lassoState.points.push(e.latlng);
-      if (lassoState.polyline) lassoState.polyline.setLatLngs(lassoState.points);
+    function moveMarkerDraw(e) {
+      if (!markerState.active) return;
+      const prev = markerState.points[markerState.points.length - 1];
+      const curr = e.latlng;
+      markerState.points.push(curr);
+      if (markerState.polyline) markerState.polyline.setLatLngs(markerState.points);
+
+      // Test the segment between prev and curr against all grid features
+      if (prev) {
+        const segment = turf.lineString([[prev.lng, prev.lat], [curr.lng, curr.lat]]);
+        for (const [id, entry] of gridIndex.entries()) {
+          const t = entry.turfFeature;
+          if (!t) continue;
+          try {
+            const intersects = turf.booleanIntersects(t, segment) ||
+                               turf.booleanContains(t, segment) ||
+                               turf.booleanContains(segment, t);
+            if (intersects && !markerState.toggledThisDrag.has(id)) {
+              toggleId(id);
+              markerState.toggledThisDrag.add(id);
+            }
+          } catch {
+            // ignore failures
+          }
+        }
+      }
     }
 
-    function finishLasso() {
-      if (!lassoState.active) return;
-      lassoState.active = false;
+    function finishMarkerDraw() {
+      if (!markerState.active) return;
+      markerState.active = false;
 
       map.dragging.enable();
 
-      if (lassoState.polyline) {
-        map.removeLayer(lassoState.polyline);
-        lassoState.polyline = null;
+      if (markerState.polyline) {
+        map.removeLayer(markerState.polyline);
+        markerState.polyline = null;
       }
 
-      const rawPoints = lassoState.points.slice();
-      lassoState.points = [];
-
-      if (rawPoints.length < 3) return;
-
-      const points = simplifyLatLngs(rawPoints, 5);
-      const ring = latLngsToClosedCoords(points);
-      if (!ring) return;
-
-      let lassoFeature;
-      try {
-        lassoFeature = turf.polygon([ring], { type: "lasso" });
-      } catch {
-        return;
-      }
-
-      const matchedIds = [];
-
-      for (const [id, entry] of gridIndex.entries()) {
-        const t = entry.turfFeature;
-        if (!t) continue;
-
-        // bbox quick reject
-        const bb1 = turf.bbox(t);
-        const bb2 = turf.bbox(lassoFeature);
-        const intersectsBbox =
-          !(bb1[0] > bb2[2] || bb1[2] < bb2[0] || bb1[1] > bb2[3] || bb1[3] < bb2[1]);
-        if (!intersectsBbox) continue;
-
-        // Intersection test
-        try {
-          if (
-            turf.booleanIntersects(t, lassoFeature) ||
-            turf.booleanContains(t, lassoFeature) ||
-            turf.booleanContains(lassoFeature, t)
-          ) {
-            matchedIds.push(id);
-          }
-        } catch {
-          // ignore failures
-        }
-      }
-
-      // Lasso toggles every matched polygon
-      if (matchedIds.length) toggleIds(matchedIds);
+      markerState.points = [];
+      markerState.toggledThisDrag.clear();
     }
 
-    map.on('mousedown', startLasso);
-    map.on('mousemove', moveLasso);
-    map.on('mouseup', finishLasso);
+    map.on('mousedown', startMarkerDraw);
+    map.on('mousemove', moveMarkerDraw);
+    map.on('mouseup', finishMarkerDraw);
     map.on('mouseout', () => {
-      if (lassoState.active) finishLasso();
+      if (markerState.active) finishMarkerDraw();
     });
 
     // UI events
@@ -608,12 +562,8 @@
 
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
-        if (lassoState.active) {
-          lassoState.active = false;
-          if (lassoState.polyline) map.removeLayer(lassoState.polyline);
-          lassoState.polyline = null;
-          lassoState.points = [];
-          map.dragging.enable();
+        if (markerState.active) {
+          finishMarkerDraw();
           return;
         }
         clearSelection();
