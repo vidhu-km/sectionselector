@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Shapefile Viewer</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    #map { height: 100vh; }
+  </style>
+</head>
+<body>
+
+<input type="file" id="fileInput" accept=".zip" />
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/shpjs@latest/dist/shp.min.js"></script>
+
+<script>
+  const map = L.map('map').setView([0, 0], 2);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  document.getElementById('fileInput').addEventListener('change', function(e) {
+    const file = e.target.files[0];
+
+    if (!file) return;
+
+    shp(file).then(function(geojson) {
+      const layer = L.geoJSON(geojson, {
+        onEachFeature: function (feature, layer) {
+          layer.bindPopup(
+            Object.entries(feature.properties || {})
+              .map(([k, v]) => `<b>${k}:</b> ${v}`)
+              .join('<br>')
+          );
+        }
+      }).addTo(map);
+
+      map.fitBounds(layer.getBounds());
+    });
+  });
+</script>
+
+</body>
+</html>
