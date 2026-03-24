@@ -1,46 +1,56 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="utf-8" />
   <title>Shapefile Viewer</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+
   <style>
-    #map { height: 100vh; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+    #map {
+      width: 100%;
+      height: 100%;
+    }
   </style>
 </head>
 <body>
 
-<input type="file" id="fileInput" accept=".zip" />
-
 <div id="map"></div>
 
-<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- shp.js -->
 <script src="https://unpkg.com/shpjs@latest/dist/shp.min.js"></script>
 
 <script>
-  const map = L.map('map').setView([0, 0], 2);
+  // Initialize map
+  const map = L.map('map').setView([51.05, -114.07], 10); // Calgary default
 
+  // Add base map
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(map);
 
-  document.getElementById('fileInput').addEventListener('change', function(e) {
-    const file = e.target.files[0];
+  // Path to your shapefile ZIP (must be in repo)
+  const shpFile = "data/ooipsectiongrid.zip";
 
-    if (!file) return;
-
-    shp(file).then(function(geojson) {
-      const layer = L.geoJSON(geojson, {
-        onEachFeature: function (feature, layer) {
-          layer.bindPopup(
-            Object.entries(feature.properties || {})
-              .map(([k, v]) => `<b>${k}:</b> ${v}`)
-              .join('<br>')
-          );
-        }
-      }).addTo(map);
-
-      map.fitBounds(layer.getBounds());
-    });
+  // Load and display shapefile
+  shp(shpFile).then(function(geojson) {
+    const layer = L.geoJSON(geojson).addTo(map);
+    map.fitBounds(layer.getBounds());
+  }).catch(function(err) {
+    console.error("Error loading shapefile:", err);
   });
 </script>
 
