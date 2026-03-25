@@ -229,9 +229,11 @@
 
     function getId(feature) {
       if (feature?.id != null) return String(feature.id);
+
       const p = feature?.properties || {};
-      const candidates = ["id", "ID", "OBJECTID", "FID", "Fid", "grid_id", "section_id", "name"];
+      const candidates = ["id", "ID", "OBJECTID", "FID", "Fid", "grid_id", "section_id", "Section", "name"];
       for (const k of candidates) if (p[k] != null) return String(p[k]);
+
       return JSON.stringify(p);
     }
 
