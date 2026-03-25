@@ -110,6 +110,26 @@
     <button id="exportBtn" class="btn" disabled>Export CSV</button>
     <button id="clearBtn" class="btn secondary">Clear Selection</button>
 
+    <!-- =========================
+         Start with a list (NEW)
+         ========================= -->
+    <div style="margin-top:10px;">
+      <div style="font-weight:700; font-size:13px; margin-bottom:6px;">Start with a list</div>
+
+      <textarea id="startListInput"
+                style="width:100%; height:90px; resize:vertical; font-size:12px; padding:8px;"
+                placeholder="Paste Section IDs here (one per line, or comma/space separated)">
+      </textarea>
+
+      <button id="startWithListBtn" class="btn secondary" style="margin-top:8px; margin-bottom:0;">
+        Apply list
+      </button>
+
+      <div id="startListStatus" style="margin-top:6px; font-size:11px; color:#444; line-height:1.3;">
+        Paste Sections, then click “Apply list”.
+      </div>
+    </div>
+
     <div id="status">No selection</div>
     <div id="tableContainer" style="margin-top:10px;">No selection</div>
   </div>
@@ -154,6 +174,11 @@
     const $clearBtn = document.getElementById("clearBtn");
     const $status = document.getElementById("status");
     const $tableContainer = document.getElementById("tableContainer");
+
+    // Start-with-list UI
+    const $startListInput = document.getElementById("startListInput");
+    const $startWithListBtn = document.getElementById("startWithListBtn");
+    const $startListStatus = document.getElementById("startListStatus");
 
     // =========================
     // Single-tooltip (hover-only)
@@ -338,6 +363,82 @@
       selected.clear();
       localStorage.removeItem("selectedFeatures");
       updateUI();
+    }
+
+    // =========================
+    // Start-with-list feature (NEW)
+    // =========================
+    let pendingStartList = null;
+
+    function parseIdList(text) {
+      // Accept:
+      // - newlines
+      // - commas
+      // - spaces/tabs
+      // - and also ignore empty lines
+      const raw = (text ?? "")
+        .split(/[\n,]+/g)     // first split on newline or comma
+        .flatMap(s => s.split(/\s+/g)) // then split on whitespace
+        .map(s => String(s).trim())
+        .filter(Boolean);
+
+      // De-dupe while preserving order
+      const seen = new Set();
+      const out = [];
+      for (const id of raw) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+      }
+      return out;
+    }
+
+    function applyStartList(ids, { replace = true } = {}) {
+      if (!Array.isArray(ids) || ids.length === 0) return { applied: 0, missing: 0 };
+
+      if (replace) {
+        clearSelection();
+      }
+
+      let applied = 0;
+      let missing = 0;
+
+      for (const id of ids) {
+        // Only grid IDs are toggleable; if not in gridIndex, count as missing
+        if (!gridIndex.has(id)) {
+          missing++;
+          continue;
+        }
+
+        // Select if not already selected (we want selection == list)
+        if (!selected.has(id)) {
+          toggleId(id);
+          applied++;
+        }
+      }
+
+      saveSelection();
+      updateUI();
+
+      return { applied, missing };
+    }
+
+    function queueOrApplyStartList(ids) {
+      if (!ids || ids.length === 0) return;
+
+      if (gridIndex.size === 0) {
+        pendingStartList = ids;
+        if ($startListStatus) {
+          $startListStatus.textContent = "Grid not loaded yet. Will apply your list when ready…";
+        }
+        return;
+      }
+
+      const res = applyStartList(ids, { replace: true });
+      if ($startListStatus) {
+        $startListStatus.textContent =
+          `Applied ${res.applied} IDs. ${res.missing} ID(s) not found in the grid.`;
+      }
     }
 
     // =========================
@@ -592,6 +693,16 @@
     $exportBtn.onclick = downloadCSV;
     $clearBtn.onclick = clearSelection;
 
+    $startWithListBtn.onclick = () => {
+      const ids = parseIdList($startListInput.value);
+
+      if (!ids.length) {
+        $startListStatus.textContent = "No IDs detected. Paste something like: 12345, 12346, 12347";
+        return;
+      }
+      queueOrApplyStartList(ids);
+    };
+
     document.addEventListener("click", (e) => {
       const t = e.target;
       if (t?.classList?.contains("copyBtn")) {
@@ -641,7 +752,16 @@
         }
 
         syncSavedSelectionStyles();
-        updateUI();
+
+        // If user applied a start list before grid was ready, apply it now.
+        // (We intentionally do this after saved selection sync,
+        // so the list becomes the current selection.)
+        if (pendingStartList && pendingStartList.length) {
+          applyStartList(pendingStartList, { replace: true });
+          pendingStartList = null;
+        } else {
+          updateUI();
+        }
       })
       .catch((err) => {
         console.error("Failed to load one or more shapefiles:", err);
