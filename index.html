@@ -157,22 +157,44 @@
     map.createPane('selectPane');
     map.getPane('selectPane').style.zIndex = 650;
 
+    // Inline style definitions
+    const GRID_UNSELECTED_STYLE = { weight: 1, color: '#555', fillOpacity: 0, opacity: 0 };
+    const GRID_SELECTED_STYLE = { weight: 2, color: '#555', fillOpacity: 0.5, opacity: 0.5 };
+
     // selected: id -> { feature, layer }
     let selected = new Map();
 
-    // gridIndex: id -> { layer, feature, turfFeature, baseStyle }
+    // gridIndex: id -> { layer, feature, turfFeature, baseStyle, isGrid }
     let gridIndex = new Map();
 
-    // Base style: neutral, no color specified
-    function getBaseStyle() {
-      return { weight: 1, fillOpacity: 0.2 };
-    }
-
-    // Get per-URL style hint (neutral, no color emphasis)
-    // We keep this function to determine a reasonable base style for each dataset
-    function getStyle(url) {
-      // Keep a simple, non-colored style
-      return getBaseStyle();
+    // Base style helper per URL
+    function getBaseStyleByUrl(url) {
+      switch (url) {
+        case selectableUrl:
+          // Grid (ooipsectiongrid)
+          return GRID_UNSELECTED_STYLE;
+        case "data/Bakken Units.zip":
+          // Thick outline, invisible fill
+          return { weight: 3, color: '#555', fillOpacity: 0, opacity: 1 };
+        case "data/Handsworth Units.zip":
+          // Thick outline, invisible fill
+          return { weight: 3, color: '#555', fillOpacity: 0, opacity: 1 };
+        case "data/lines.zip":
+          // Grey lines
+          return { color: '#808080', weight: 2, opacity: 1, fillOpacity: 0 };
+        case "data/sw.zip":
+          // Blue fill/outline
+          return { color: '#1f6bd8', fillColor: '#1f6bd8', fillOpacity: 0.4, opacity: 1 };
+        case "data/T1.zip":
+          // Green
+          return { color: '#2ecc71', fillColor: '#2ecc71', fillOpacity: 0.4, opacity: 1 };
+        case "data/T2.zip":
+          // Red
+          return { color: '#e74c3c', fillColor: '#e74c3c', fillOpacity: 0.4, opacity: 1 };
+        default:
+          // Fallback neutral
+          return { weight: 1, fillOpacity: 0.2, opacity: 1, color: '#333' };
+      }
     }
 
     const truncate = (s, n = 160) => {
@@ -213,12 +235,13 @@
       }
     }
 
-    function applySelectionStyle(layer, isSelected, baseStyle) {
+    function applySelectionStyle(layer, isSelected, baseStyle, isGrid = false) {
       if (!layer) return;
-      if (isSelected) {
-        // Neutral highlight for selection
-        layer.setStyle({ weight: 2, fillOpacity: 0.5 });
+      if (isSelected && isGrid) {
+        // Grid selected styling
+        layer.setStyle(GRID_SELECTED_STYLE);
       } else {
+        // Revert to base style (unselected state)
         layer.setStyle(baseStyle);
       }
     }
@@ -334,7 +357,7 @@
         if (item?.layer) {
           const grid = gridIndex.get(id);
           const base = grid?.baseStyle;
-          applySelectionStyle(item.layer, false, base);
+          applySelectionStyle(item.layer, false, base, grid?.isGrid);
         }
       }
       selected.clear();
@@ -348,7 +371,7 @@
         if (grid) {
           // Restore from saved: mark as selected
           item.layer = grid.layer;
-          applySelectionStyle(grid.layer, true, grid.baseStyle);
+          applySelectionStyle(grid.layer, true, grid.baseStyle, grid.isGrid);
         } else {
           selected.delete(id);
         }
@@ -363,13 +386,13 @@
       if (selected.has(id)) {
         // unselect
         const item = selected.get(id);
-        if (item?.layer) applySelectionStyle(item.layer, false, entry.baseStyle);
+        if (item?.layer) applySelectionStyle(item.layer, false, entry.baseStyle, entry.isGrid);
         selected.delete(id);
         return true;
       } else {
         // select
         selected.set(id, { feature: entry.feature, layer: entry.layer, baseStyle: entry.baseStyle });
-        applySelectionStyle(entry.layer, true, entry.baseStyle);
+        applySelectionStyle(entry.layer, true, entry.baseStyle, entry.isGrid);
         return true;
       }
     }
@@ -393,7 +416,7 @@
     loadSelection();
 
     function loadShapefile(url) {
-      const baseStyle = getBaseStyle();
+      const baseStyle = getBaseStyleByUrl(url);
 
       return shp(url).then((geojson) => {
         const isGrid = url === selectableUrl;
@@ -407,14 +430,23 @@
             if (!isGrid) {
               // Display-only: no selection, no tooltip, no interactivity
               layer.off();
+
+              // Special-case styling for non-grid datasets:
+              // Bakken Units and Handsworth Units: outline thick, fill 0%
+              if (url === "data/Bakken Units.zip" || url === "data/Handsworth Units.zip") {
+                layer.setStyle({ weight: 3, fillOpacity: 0, color: '#555' });
+              }
+
+              // Lines: ensure grey visibility (already set by baseStyle above)
+              // SW / T1 / T2: handled by getBaseStyleByUrl
               return;
             }
 
             // Selectable ooipsectiongrid
-            gridIndex.set(id, { layer, feature, turfFeature: null, baseStyle });
+            gridIndex.set(id, { layer, feature, turfFeature: null, baseStyle, isGrid: true });
 
             // Restore saved selection immediately (styles)
-            if (selected.has(id)) applySelectionStyle(layer, true, baseStyle);
+            if (selected.has(id)) applySelectionStyle(layer, true, baseStyle, true);
 
             // Tooltips with attributes
             layer.bindTooltip(makeTooltipContent(feature?.properties), {
@@ -480,7 +512,7 @@
         alert("Error loading shapefiles – see console for details.");
       });
 
-    // ---------------- MARKER DRAG SELECTION ----------------
+    // ---------------- MARKER DRAG SELECTION (unchanged) ----------------
     const markerState = {
       active: false,
       points: [],
