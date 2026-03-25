@@ -1,220 +1,652 @@
-import streamlit as st
-import pandas as pd
-import geopandas as gpd
-import numpy as np
-from io import BytesIO
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Section Selection</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-import folium
-from streamlit_folium import st_folium
-import branca.colormap as cm
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 
-st.set_page_config(page_title="Section Map + Export", layout="wide")
+  <style>
+    html, body { margin:0; height:100%; font-family:sans-serif; }
+    #map { width:100%; height:100%; }
 
-st.title("Section Map + Export Dashboard")
-
-# ---------- HARD-CODED PATHS ----------
-SHP_PATH = "ooipsectiongrid.shp"
-XLSX_PATH = "well data.xlsx"
-OUTPUT_FILENAME = "section_grouped_sums.xlsx"
-
-
-# ---------- Load Data ----------
-@st.cache_data
-def load_data():
-    shp = gpd.read_file(SHP_PATH)
-    xlsx = pd.read_excel(XLSX_PATH)
-
-    if "Section" not in shp.columns:
-        raise ValueError("Shapefile must contain a 'Section' column.")
-    if "Section" not in xlsx.columns:
-        raise ValueError("Excel file must contain a 'Section' column.")
-
-    return shp, xlsx
-
-
-try:
-    shp_gdf, well_df = load_data()
-except FileNotFoundError as e:
-    st.error(
-        f"File not found: {e}\n\n"
-        f"Make sure `{SHP_PATH}` (with all sidecar files: .shx, .dbf, .prj) "
-        f"and `{XLSX_PATH}` are in the same directory as this script."
-    )
-    st.stop()
-except Exception as e:
-    st.error(f"Failed to load data: {e}")
-    st.stop()
-
-# ---------- Prepare ----------
-well_df = well_df.copy()
-shp_gdf = shp_gdf.copy()
-
-well_df["Section"] = well_df["Section"].astype(str).str.strip()
-shp_gdf["Section"] = shp_gdf["Section"].astype(str).str.strip()
-
-# Get numeric columns (exclude 'Section' in case it's numeric in the original)
-numeric_cols = [
-    c for c in well_df.select_dtypes(include=[np.number]).columns.tolist()
-    if c != "Section"
-]
-
-if not numeric_cols:
-    st.error("No numeric columns found in the Excel dataset.")
-    st.stop()
-
-# Convert safely
-for col in numeric_cols:
-    well_df[col] = pd.to_numeric(well_df[col], errors="coerce")
-
-# ---------- Group ----------
-grouped = well_df.groupby("Section")[numeric_cols].sum(min_count=1).reset_index()
-
-# ---------- Merge ----------
-merged = shp_gdf.merge(grouped, on="Section", how="left")
-merged[numeric_cols] = merged[numeric_cols].fillna(0)
-
-# ---------- Dropdown ----------
-selected_col = st.selectbox(
-    "Select variable to display on map",
-    numeric_cols,
-    index=0,
-)
-
-# ---------- Interactive Map ----------
-st.subheader("Interactive Map")
-
-# FIX 1: Handle missing CRS gracefully
-if merged.crs is None:
-    st.warning(
-        "Shapefile has no CRS defined — assuming EPSG:4326 (WGS 84). "
-        "If the map looks wrong, add a .prj file to your shapefile."
-    )
-    merged_folium = merged.set_crs(epsg=4326)
-else:
-    merged_folium = merged.to_crs(epsg=4326)
-
-# FIX 2: Keep only the columns Folium actually needs to avoid bloated GeoJSON
-#         and serialization problems with unexpected dtypes.
-keep_cols = ["Section", selected_col, "geometry"]
-merged_folium = merged_folium[keep_cols].copy()
-
-# FIX 3: Replace NaN / Inf with 0 so JSON serialization never breaks
-merged_folium[selected_col] = (
-    merged_folium[selected_col]
-    .replace([np.inf, -np.inf], np.nan)
-    .fillna(0)
-)
-
-# FIX 4: Cast to plain Python floats (avoids numpy-type JSON errors)
-merged_folium[selected_col] = merged_folium[selected_col].astype(float)
-
-# Map center
-center = [
-    merged_folium.geometry.centroid.y.mean(),
-    merged_folium.geometry.centroid.x.mean(),
-]
-
-m = folium.Map(location=center, zoom_start=6, tiles="cartodbpositron")
-
-# FIX 5: Handle vmin == vmax (all identical values) to avoid colormap crash
-vmin = float(merged_folium[selected_col].min())
-vmax = float(merged_folium[selected_col].max())
-
-if vmin == vmax:
-    # Pad so the scale constructor doesn't divide by zero
-    vmax = vmin + 1.0
-
-colormap = cm.linear.Viridis_09.scale(vmin, vmax)
-colormap.caption = selected_col
-
-
-# FIX 6: Capture selected_col as a default arg so the closure is stable
-def style_function(feature, col=selected_col, cmap=colormap):
-    value = feature["properties"].get(col)
-    if value is None or value == 0:
-        return {
-            "fillColor": "lightgrey",
-            "color": "black",
-            "weight": 0.3,
-            "fillOpacity": 0.5,
-        }
-    return {
-        "fillColor": cmap(value),
-        "color": "black",
-        "weight": 0.3,
-        "fillOpacity": 0.7,
+    #panel {
+      position:absolute;
+      top:10px; left:10px;
+      width:340px;
+      max-height:82vh;
+      overflow:auto;
+      background:#fff;
+      border-radius:8px;
+      padding:12px;
+      font-size:12px;
+      z-index:1000;
     }
 
+    .header {
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+      margin-bottom:10px;
+    }
+    .title { font-weight:700; font-size:13px; }
 
-tooltip = folium.features.GeoJsonTooltip(
-    fields=["Section", selected_col],
-    aliases=["Section:", f"{selected_col}:"],
-    localize=True,
-)
+    .badge {
+      font-size:11px;
+      padding:3px 8px;
+      border-radius:999px;
+      border:1px solid #ccc;
+      white-space:nowrap;
+    }
 
-popup = folium.features.GeoJsonPopup(
-    fields=["Section", selected_col],
-    aliases=["Section:", f"{selected_col}:"],
-)
+    .btn {
+      width:100%;
+      padding:9px 10px;
+      margin-bottom:8px;
+      cursor:pointer;
+      border:none;
+      border-radius:6px;
+      background:#eee;
+      color:#000;
+      font-weight:600;
+    }
+    .btn.secondary { background:#ddd; }
+    .btn:disabled { background:#e0e0e0; cursor:not-allowed; }
 
-folium.GeoJson(
-    merged_folium,
-    style_function=style_function,
-    tooltip=tooltip,
-    popup=popup,
-).add_to(m)
+    table { width:100%; border-collapse:collapse; font-size:11px; }
+    th, td { border:1px solid #ddd; padding:4px; text-align:left; vertical-align:top; }
+    th { background:#f4f4f4; }
 
-colormap.add_to(m)
+    #status { font-size:11px; color:#444; margin-top:6px; line-height:1.3; }
 
-# FIX 7: Use use_container_width so it adapts to the layout
-st_folium(m, use_container_width=True, height=600)
+    .hint {
+      background:#f7f7f7;
+      border:1px solid #e5e5e5;
+      border-radius:6px;
+      padding:8px;
+      margin:8px 0 10px 0;
+      line-height:1.35;
+      color:#333;
+    }
 
-# ---------- Data Preview ----------
-with st.expander("Preview grouped data"):
-    st.dataframe(
-        grouped.sort_values(by=selected_col, ascending=False).reset_index(drop=True),
-        use_container_width=True,
-    )
+    .key {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
+      font-size: 11px;
+      background:#fff;
+      padding:2px 6px;
+      border-radius:6px;
+      border:1px solid #ddd;
+    }
 
+    .copyBtn {
+      margin-left:6px;
+      padding:2px 6px;
+      font-size:11px;
+      border:1px solid #bbb;
+      border-radius:4px;
+      background:#f7f7f7;
+      cursor:pointer;
+    }
+    .copyBtn:hover { background:#eee; }
+  </style>
+</head>
 
-# ---------- Export ----------
-def to_excel_bytes(df: pd.DataFrame) -> bytes:
-    bio = BytesIO()
+<body>
+  <div id="map"></div>
 
-    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
-        # FIX 8: Deduplicate sheet names after 31-char truncation
-        used_names: set[str] = set()
-        for col in numeric_cols:
-            sheet_name = col[:31]
-            # Make unique if truncation caused a collision
-            base, counter = sheet_name, 1
-            while sheet_name in used_names:
-                suffix = f"_{counter}"
-                sheet_name = base[: 31 - len(suffix)] + suffix
-                counter += 1
-            used_names.add(sheet_name)
+  <div id="panel">
+    <div class="header">
+      <div class="title">Selection Export</div>
+      <div class="badge" id="countBadge">0 selected</div>
+    </div>
 
-            df_out = df[["Section", col]].sort_values(by=col, ascending=False)
-            df_out.to_excel(writer, index=False, sheet_name=sheet_name)
+    <div class="hint">
+      <div><span class="key">Multi-Select</span>: Hold shift and drag on the map</div>
+      <div><span class="key">Single Select</span>: Left Click</div>
+    </div>
 
-        meta = pd.DataFrame(
-            {
-                "source_shapefile": [SHP_PATH],
-                "source_excel": [XLSX_PATH],
-                "group_column": ["Section"],
-                "columns": [", ".join(numeric_cols)],
+    <button id="exportBtn" class="btn" disabled>Export CSV</button>
+    <button id="clearBtn" class="btn secondary">Clear Selection</button>
+
+    <div id="status">No selection</div>
+    <div id="tableContainer" style="margin-top:10px;">No selection</div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/shpjs@latest/dist/shp.min.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+
+  <script>
+    // =========================
+    // Config / Globals
+    // =========================
+    const shapefileUrls = [
+      "data/ooipsectiongrid.zip",
+      "data/Bakken Units.zip",
+      "data/Handsworth Units.zip",
+      "data/lines.zip",
+      "data/sw.zip",
+      "data/T1.zip",
+      "data/T2.zip",
+    ];
+    const selectableUrl = "data/ooipsectiongrid.zip";
+
+    const map = L.map('map', { boxZoom: false }).setView([51.05, -114.07], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    map.createPane('selectPane');
+    map.getPane('selectPane').style.zIndex = 650;
+
+    const GRID_UNSELECTED_STYLE = { fillOpacity: 0, opacity: 0, color: '#555', weight: 1 };
+    const GRID_SELECTED_STYLE   = { fillOpacity: 0.4, opacity: 0.4, color: '#0000ff', weight: 1 };
+
+    // id -> { feature, layer, baseStyle, isGrid, turfFeature }
+    const gridIndex = new Map();
+    // id -> { feature, layer, baseStyle, isGrid }
+    const selected = new Map();
+
+    const $countBadge = document.getElementById("countBadge");
+    const $exportBtn = document.getElementById("exportBtn");
+    const $clearBtn = document.getElementById("clearBtn");
+    const $status = document.getElementById("status");
+    const $tableContainer = document.getElementById("tableContainer");
+
+    // =========================
+    // Single-tooltip (hover-only)
+    // =========================
+    // This ensures: only ONE tooltip ever shows at a time.
+    let hoverTooltip = null;
+
+    function ensureHoverTooltip() {
+      if (hoverTooltip) return;
+
+      hoverTooltip = L.tooltip({
+        direction: "auto",
+        opacity: 0.95,
+        sticky: false
+      });
+    }
+
+    function showHoverTooltipForLayer(layer, html) {
+      ensureHoverTooltip();
+
+      const center = layer.getBounds?.().getCenter?.();
+      // If bounds center is not available (unlikely), fall back to setLatLng result if possible
+      const latlng = center || (layer.getLatLng ? layer.getLatLng() : null);
+
+      hoverTooltip
+        .setContent(html || "")
+        .setLatLng(latlng);
+
+      if (!hoverTooltip._map) hoverTooltip.addTo(map);
+      else hoverTooltip.update();
+    }
+
+    function hideHoverTooltip() {
+      if (!hoverTooltip) return;
+      hoverTooltip.remove();
+    }
+
+    // If you move off the map entirely, hide tooltip
+    map.on("mouseout", () => hideHoverTooltip());
+
+    // =========================
+    // Helpers
+    // =========================
+    function truncate(s, n = 160) {
+      s = (s == null) ? "" : String(s);
+      return s.length > n ? s.slice(0, n) + "…" : s;
+    }
+
+    function getId(feature) {
+      if (feature?.id != null) return String(feature.id);
+      const p = feature?.properties || {};
+      const candidates = ["id", "ID", "OBJECTID", "FID", "Fid", "grid_id", "section_id", "name"];
+      for (const k of candidates) if (p[k] != null) return String(p[k]);
+      return JSON.stringify(p);
+    }
+
+    function getBaseStyleByUrl(url) {
+      switch (url) {
+        case "data/Bakken Units.zip":
+        case "data/Handsworth Units.zip":
+          return { weight: 3, color: '#555', fillOpacity: 0, opacity: 1 };
+
+        case "data/lines.zip":
+          return { color: '#808080', weight: 2, opacity: 1, fillOpacity: 0 };
+
+        case "data/sw.zip":
+          return { color: '#1f6bd8', fillColor: '#1f6bd8', fillOpacity: 0.4, opacity: 1 };
+
+        case "data/T1.zip":
+          return { color: '#2ecc71', fillColor: '#2ecc71', fillOpacity: 0.4, opacity: 1 };
+
+        case "data/T2.zip":
+          return { color: '#e74c3c', fillColor: '#e74c3c', fillOpacity: 0.4, opacity: 1 };
+
+        case selectableUrl:
+          return GRID_UNSELECTED_STYLE;
+
+        default:
+          return { weight: 1, fillOpacity: 0.2, opacity: 1, color: '#333' };
+      }
+    }
+
+    function makeTooltipContent(props) {
+      const p = props || {};
+      const entries = Object.entries(p);
+      const max = 8;
+
+      const items = entries.slice(0, max).map(([k, v]) => `
+        <div><b>${k}</b>: ${truncate(v, 120)}</div>
+      `).join("");
+
+      const more = entries.length > max
+        ? `<div><i>+ ${entries.length - max} more…</i></div>`
+        : "";
+
+      return `<div>${items}${more}</div>`;
+    }
+
+    function applySelectionStyle(layer, isSelected, baseStyle, isGrid) {
+      if (!layer) return;
+      if (isSelected && isGrid) layer.setStyle(GRID_SELECTED_STYLE);
+      else layer.setStyle(baseStyle);
+    }
+
+    function getSelectedFeatures() {
+      return [...selected.values()].map(x => x.feature).filter(Boolean);
+    }
+
+    // =========================
+    // Persist selection
+    // =========================
+    function saveSelection() {
+      const payload = getSelectedFeatures();
+      localStorage.setItem("selectedFeatures", JSON.stringify(payload));
+    }
+
+    function loadSelection() {
+      const data = localStorage.getItem("selectedFeatures");
+      if (!data) return;
+
+      try {
+        const list = JSON.parse(data);
+        for (const f of list) {
+          const id = getId(f);
+          // layer will be linked once gridIndex is built
+          selected.set(id, { feature: f, layer: null, baseStyle: null, isGrid: true });
+        }
+      } catch (e) {
+        console.warn("Failed to parse saved selection:", e);
+      }
+    }
+
+    function syncSavedSelectionStyles() {
+      for (const [id] of selected.entries()) {
+        const grid = gridIndex.get(id);
+        if (!grid) { selected.delete(id); continue; }
+
+        const item = selected.get(id);
+        item.layer = grid.layer;
+        item.baseStyle = grid.baseStyle;
+        item.isGrid = grid.isGrid;
+
+        applySelectionStyle(grid.layer, true, grid.baseStyle, grid.isGrid);
+      }
+    }
+
+    // =========================
+    // Selection toggling
+    // =========================
+    function toggleId(id) {
+      const entry = gridIndex.get(id);
+      if (!entry) return false;
+
+      if (selected.has(id)) {
+        const item = selected.get(id);
+        applySelectionStyle(item.layer, false, entry.baseStyle, entry.isGrid);
+        selected.delete(id);
+        return true;
+      } else {
+        selected.set(id, { feature: entry.feature, layer: entry.layer, baseStyle: entry.baseStyle, isGrid: entry.isGrid });
+        applySelectionStyle(entry.layer, true, entry.baseStyle, entry.isGrid);
+        return true;
+      }
+    }
+
+    function toggleIds(ids) {
+      let changed = false;
+      const uniq = Array.from(new Set(ids));
+      for (const id of uniq) changed = toggleId(id) || changed;
+
+      if (changed) {
+        saveSelection();
+        updateUI();
+      }
+    }
+
+    function clearSelection() {
+      for (const [id, item] of selected.entries()) {
+        const grid = gridIndex.get(id);
+        if (grid?.layer) applySelectionStyle(grid.layer, false, grid.baseStyle, grid.isGrid);
+      }
+      selected.clear();
+      localStorage.removeItem("selectedFeatures");
+      updateUI();
+    }
+
+    // =========================
+    // UI
+    // =========================
+    function updateUI() {
+      const count = selected.size;
+
+      $countBadge.textContent = `${count} selected`;
+      $exportBtn.disabled = (count === 0);
+
+      if (count === 0) {
+        $status.textContent = "No selection";
+        $tableContainer.textContent = "No selection";
+        return;
+      }
+
+      $status.textContent = `Selected ${count} polygon${count === 1 ? "" : "s"} from ooipsectiongrid.`;
+
+      const features = getSelectedFeatures();
+      const props0 = features[0]?.properties || {};
+      const keys = Object.keys(props0);
+
+      if (!features.length || keys.length === 0) {
+        $tableContainer.textContent = "No selection";
+        return;
+      }
+
+      const header = keys.map(k => `
+        <th>${k}
+          <button class="copyBtn" data-key="${k}" title="Copy column">Copy</button>
+        </th>
+      `).join("");
+
+      const rows = features.map(f => {
+        const props = f.properties || {};
+        return `<tr>${keys.map(k => `<td>${props[k] ?? ""}</td>`).join("")}</tr>`;
+      }).join("");
+
+      $tableContainer.innerHTML = `<table><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    async function copyColumnToClipboard(key) {
+      const features = getSelectedFeatures();
+      const header = key;
+      const rows = features.map(f => (f.properties?.[key] ?? ""));
+      const csv = [header, ...rows].join("\n");
+
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(csv);
+        else throw new Error("Clipboard API unavailable");
+      } catch {
+        const ta = document.createElement("textarea");
+        ta.value = csv;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try { document.execCommand("copy"); } catch {}
+        document.body.removeChild(ta);
+      }
+    }
+
+    function downloadCSV() {
+      if (selected.size === 0) return;
+
+      const features = getSelectedFeatures();
+      const keys = Object.keys(features[0]?.properties || {});
+      if (keys.length === 0) return alert("Selected features have no properties to export.");
+
+      const escapeCell = (v) => {
+        const s = (v == null) ? "" : String(v);
+        return `"${s.replace(/"/g, '""')}"`;
+      };
+
+      const lines = [
+        keys.join(","),
+        ...features.map(f => keys.map(k => escapeCell(f.properties?.[k])).join(","))
+      ];
+
+      const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "ooipsectiongrid_selected_polygons.csv";
+      a.click();
+
+      URL.revokeObjectURL(url);
+    }
+
+    // =========================
+    // Shapefile loading
+    // =========================
+    function loadShapefile(url) {
+      const baseStyle = getBaseStyleByUrl(url);
+
+      return shp(url).then((geojson) => {
+        const isGrid = url === selectableUrl;
+
+        return L.geoJSON(geojson, {
+          pane: isGrid ? "selectPane" : undefined,
+          style: baseStyle,
+
+          onEachFeature: (feature, layer) => {
+            const id = getId(feature);
+
+            if (!isGrid) {
+              layer.off();
+
+              if (url === "data/Bakken Units.zip" || url === "data/Handsworth Units.zip") {
+                layer.setStyle({ weight: 3, fillOpacity: 0, color: '#555' });
+              }
+              return;
             }
-        )
-        meta.to_excel(writer, index=False, sheet_name="Metadata")
 
-    return bio.getvalue()
+            // Grid: selectable
+            gridIndex.set(id, {
+              layer,
+              feature,
+              turfFeature: null,
+              baseStyle,
+              isGrid: true
+            });
 
+            if (selected.has(id)) applySelectionStyle(layer, true, baseStyle, true);
 
-excel_bytes = to_excel_bytes(grouped)
+            // ---- Important: ensure NO per-feature tooltip exists ----
+            // (We do not call layer.bindTooltip)
+            layer.off();
 
-st.sidebar.download_button(
-    label="📥 Download Excel",
-    data=excel_bytes,
-    file_name=OUTPUT_FILENAME,
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.charset=utf-8",
-)
+            // Hover shows the single global tooltip
+            layer.on("mouseover", () => {
+              if (drawState.active) return; // keep tooltips only on normal hover
+              const html = makeTooltipContent(feature?.properties);
+              showHoverTooltipForLayer(layer, html);
+            });
+
+            // Mouse out hides it
+            layer.on("mouseout", () => {
+              hideHoverTooltip();
+            });
+
+            // Click toggles selection
+            layer.on("click", () => {
+              if (drawState.active) return;
+              toggleIds([id]);
+            });
+          }
+        });
+      });
+    }
+
+    // =========================
+    // Shift-drag selection
+    // =========================
+    const drawState = {
+      active: false,
+      points: [],
+      polyline: null,
+      toggledThisDrag: new Set()
+    };
+
+    function startDraw(e) {
+      if (!e.originalEvent?.shiftKey) return;
+      if (e.originalEvent?.button !== 0) return;
+
+      if (e.originalEvent?.target?.closest?.("#panel")) return;
+
+      drawState.active = true;
+      drawState.points = [e.latlng];
+      drawState.toggledThisDrag.clear();
+
+      // Hide tooltip while drawing
+      hideHoverTooltip();
+
+      if (drawState.polyline) {
+        map.removeLayer(drawState.polyline);
+        drawState.polyline = null;
+      }
+
+      drawState.polyline = L.polyline(drawState.points, {
+        color: "", weight: 2, opacity: 0.9, dashArray: "6 6"
+      }).addTo(map);
+    }
+
+    function moveDraw(e) {
+      if (!drawState.active) return;
+
+      const prev = drawState.points[drawState.points.length - 1];
+      const curr = e.latlng;
+
+      drawState.points.push(curr);
+      if (drawState.polyline) drawState.polyline.setLatLngs(drawState.points);
+
+      if (!prev) return;
+
+      const segment = turf.lineString(
+        [[prev.lng, prev.lat], [curr.lng, curr.lat]]
+      );
+
+      for (const [id, entry] of gridIndex.entries()) {
+        if (drawState.toggledThisDrag.has(id)) continue;
+
+        const t = entry.turfFeature;
+        if (!t) continue;
+
+        try {
+          const intersects =
+            turf.booleanIntersects(t, segment) ||
+            turf.booleanContains(t, segment) ||
+            turf.booleanContains(segment, t);
+
+          if (intersects) {
+            toggleId(id);
+            drawState.toggledThisDrag.add(id);
+          }
+        } catch {
+          // ignore turf errors
+        }
+      }
+    }
+
+    function finishDraw() {
+      if (!drawState.active) return;
+      drawState.active = false;
+
+      if (drawState.polyline) {
+        map.removeLayer(drawState.polyline);
+        drawState.polyline = null;
+      }
+
+      drawState.points = [];
+      drawState.toggledThisDrag.clear();
+
+      // Hide tooltip after finishing draw (prevents “stuck” tooltips)
+      hideHoverTooltip();
+
+      saveSelection();
+      updateUI();
+    }
+
+    map.on("mousedown", startDraw);
+    map.on("mousemove", moveDraw);
+    map.on("mouseup", finishDraw);
+    map.on("mouseout", finishDraw);
+
+    // =========================
+    // Events
+    // =========================
+    $exportBtn.onclick = downloadCSV;
+    $clearBtn.onclick = clearSelection;
+
+    document.addEventListener("click", (e) => {
+      const t = e.target;
+      if (t?.classList?.contains("copyBtn")) {
+        const key = t.getAttribute("data-key");
+        if (key) copyColumnToClipboard(key);
+      }
+    });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (drawState.active) return finishDraw();
+      clearSelection();
+    });
+
+    // =========================
+    // Main load
+    // =========================
+    loadSelection();
+    updateUI();
+
+    const otherUrls = shapefileUrls.filter(u => u !== selectableUrl);
+    const gridUrls = shapefileUrls.filter(u => u === selectableUrl);
+
+    Promise.all(otherUrls.map(loadShapefile))
+      .then((otherLayers) => {
+        L.featureGroup(otherLayers).addTo(map);
+        return Promise.all(gridUrls.map(loadShapefile));
+      })
+      .then((gridLayers) => {
+        L.featureGroup(gridLayers).addTo(map);
+
+        let bounds = null;
+        map.eachLayer(layer => {
+          if (typeof layer.getBounds === "function") {
+            const b = layer.getBounds();
+            if (b && b.isValid()) bounds = bounds ? bounds.extend(b) : b;
+          }
+        });
+        if (bounds) map.fitBounds(bounds, { padding: [20, 20] });
+
+        for (const [id, entry] of gridIndex.entries()) {
+          try {
+            entry.turfFeature = turf.feature(entry.feature.geometry, entry.feature.properties);
+          } catch (err) {
+            console.warn("Turf feature build failed for", id, err);
+          }
+        }
+
+        syncSavedSelectionStyles();
+        updateUI();
+      })
+      .catch((err) => {
+        console.error("Failed to load one or more shapefiles:", err);
+        alert("Error loading shapefiles – see console for details.");
+      });
+  </script>
+</body>
+</html>
