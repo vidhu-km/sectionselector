@@ -156,6 +156,45 @@
     const $tableContainer = document.getElementById("tableContainer");
 
     // =========================
+    // Single-tooltip (hover-only)
+    // =========================
+    // This ensures: only ONE tooltip ever shows at a time.
+    let hoverTooltip = null;
+
+    function ensureHoverTooltip() {
+      if (hoverTooltip) return;
+
+      hoverTooltip = L.tooltip({
+        direction: "auto",
+        opacity: 0.95,
+        sticky: false
+      });
+    }
+
+    function showHoverTooltipForLayer(layer, html) {
+      ensureHoverTooltip();
+
+      const center = layer.getBounds?.().getCenter?.();
+      // If bounds center is not available (unlikely), fall back to setLatLng result if possible
+      const latlng = center || (layer.getLatLng ? layer.getLatLng() : null);
+
+      hoverTooltip
+        .setContent(html || "")
+        .setLatLng(latlng);
+
+      if (!hoverTooltip._map) hoverTooltip.addTo(map);
+      else hoverTooltip.update();
+    }
+
+    function hideHoverTooltip() {
+      if (!hoverTooltip) return;
+      hoverTooltip.remove();
+    }
+
+    // If you move off the map entirely, hide tooltip
+    map.on("mouseout", () => hideHoverTooltip());
+
+    // =========================
     // Helpers
     // =========================
     function truncate(s, n = 160) {
@@ -410,7 +449,6 @@
             if (!isGrid) {
               layer.off();
 
-              // Special neutral styling for some non-grid datasets
               if (url === "data/Bakken Units.zip" || url === "data/Handsworth Units.zip") {
                 layer.setStyle({ weight: 3, fillOpacity: 0, color: '#555' });
               }
@@ -421,21 +459,31 @@
             gridIndex.set(id, {
               layer,
               feature,
-              turfFeature: null, // created after load (once)
+              turfFeature: null,
               baseStyle,
               isGrid: true
             });
 
             if (selected.has(id)) applySelectionStyle(layer, true, baseStyle, true);
 
-            layer.bindTooltip(makeTooltipContent(feature?.properties), {
-              sticky: false,
-              direction: "auto",
-              opacity: 0.95
+            // ---- Important: ensure NO per-feature tooltip exists ----
+            // (We do not call layer.bindTooltip)
+            layer.off();
+
+            // Hover shows the single global tooltip
+            layer.on("mouseover", () => {
+              if (drawState.active) return; // keep tooltips only on normal hover
+              const html = makeTooltipContent(feature?.properties);
+              showHoverTooltipForLayer(layer, html);
             });
 
+            // Mouse out hides it
+            layer.on("mouseout", () => {
+              hideHoverTooltip();
+            });
+
+            // Click toggles selection
             layer.on("click", () => {
-              // single click toggle; ignore if currently drawing
               if (drawState.active) return;
               toggleIds([id]);
             });
@@ -458,12 +506,14 @@
       if (!e.originalEvent?.shiftKey) return;
       if (e.originalEvent?.button !== 0) return;
 
-      // don't start drawing when interacting with panel
       if (e.originalEvent?.target?.closest?.("#panel")) return;
 
       drawState.active = true;
       drawState.points = [e.latlng];
       drawState.toggledThisDrag.clear();
+
+      // Hide tooltip while drawing
+      hideHoverTooltip();
 
       if (drawState.polyline) {
         map.removeLayer(drawState.polyline);
@@ -486,12 +536,10 @@
 
       if (!prev) return;
 
-      // segment as turf line (lng/lat)
       const segment = turf.lineString(
         [[prev.lng, prev.lat], [curr.lng, curr.lat]]
       );
 
-      // Try to keep it reasonably fast: only intersect/contains checks
       for (const [id, entry] of gridIndex.entries()) {
         if (drawState.toggledThisDrag.has(id)) continue;
 
@@ -526,7 +574,9 @@
       drawState.points = [];
       drawState.toggledThisDrag.clear();
 
-      // one UI update + save after drag ends (instead of many)
+      // Hide tooltip after finishing draw (prevents “stuck” tooltips)
+      hideHoverTooltip();
+
       saveSelection();
       updateUI();
     }
@@ -560,7 +610,7 @@
     // Main load
     // =========================
     loadSelection();
-    updateUI(); // initial render (e.g. loaded selection will fill after grid loads)
+    updateUI();
 
     const otherUrls = shapefileUrls.filter(u => u !== selectableUrl);
     const gridUrls = shapefileUrls.filter(u => u === selectableUrl);
@@ -573,7 +623,6 @@
       .then((gridLayers) => {
         L.featureGroup(gridLayers).addTo(map);
 
-        // Fit bounds
         let bounds = null;
         map.eachLayer(layer => {
           if (typeof layer.getBounds === "function") {
@@ -583,7 +632,6 @@
         });
         if (bounds) map.fitBounds(bounds, { padding: [20, 20] });
 
-        // Build turf features once after everything is on the map
         for (const [id, entry] of gridIndex.entries()) {
           try {
             entry.turfFeature = turf.feature(entry.feature.geometry, entry.feature.properties);
