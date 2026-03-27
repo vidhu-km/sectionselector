@@ -110,9 +110,7 @@
     <button id="exportBtn" class="btn" disabled>Export CSV</button>
     <button id="clearBtn" class="btn secondary">Clear Selection</button>
 
-    <!-- =========================
-         Start with a list (NEW)
-         ========================= -->
+    <!-- Start with a list -->
     <div style="margin-top:10px;">
       <div style="font-weight:700; font-size:13px; margin-bottom:6px;">Start with a list</div>
 
@@ -153,6 +151,9 @@
     ];
     const selectableUrl = "data/ooipsectiongrid.zip";
 
+    // IMPORTANT: export + table should use the exact attribute name "Section"
+    const SECTION_PROP = "Section";
+
     const map = L.map('map', { boxZoom: false }).setView([51.05, -114.07], 10);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors'
@@ -183,7 +184,6 @@
     // =========================
     // Single-tooltip (hover-only)
     // =========================
-    // This ensures: only ONE tooltip ever shows at a time.
     let hoverTooltip = null;
 
     function ensureHoverTooltip() {
@@ -200,7 +200,6 @@
       ensureHoverTooltip();
 
       const center = layer.getBounds?.().getCenter?.();
-      // If bounds center is not available (unlikely), fall back to setLatLng result if possible
       const latlng = center || (layer.getLatLng ? layer.getLatLng() : null);
 
       hoverTooltip
@@ -216,7 +215,6 @@
       hoverTooltip.remove();
     }
 
-    // If you move off the map entirely, hide tooltip
     map.on("mouseout", () => hideHoverTooltip());
 
     // =========================
@@ -305,7 +303,6 @@
         const list = JSON.parse(data);
         for (const f of list) {
           const id = getId(f);
-          // layer will be linked once gridIndex is built
           selected.set(id, { feature: f, layer: null, baseStyle: null, isGrid: true });
         }
       } catch (e) {
@@ -368,23 +365,17 @@
     }
 
     // =========================
-    // Start-with-list feature (NEW)
+    // Start-with-list feature
     // =========================
     let pendingStartList = null;
 
     function parseIdList(text) {
-      // Accept:
-      // - newlines
-      // - commas
-      // - spaces/tabs
-      // - and also ignore empty lines
       const raw = (text ?? "")
-        .split(/[\n,]+/g)     // first split on newline or comma
-        .flatMap(s => s.split(/\s+/g)) // then split on whitespace
+        .split(/[\n,]+/g)
+        .flatMap(s => s.split(/\s+/g))
         .map(s => String(s).trim())
         .filter(Boolean);
 
-      // De-dupe while preserving order
       const seen = new Set();
       const out = [];
       for (const id of raw) {
@@ -398,21 +389,16 @@
     function applyStartList(ids, { replace = true } = {}) {
       if (!Array.isArray(ids) || ids.length === 0) return { applied: 0, missing: 0 };
 
-      if (replace) {
-        clearSelection();
-      }
+      if (replace) clearSelection();
 
       let applied = 0;
       let missing = 0;
 
       for (const id of ids) {
-        // Only grid IDs are toggleable; if not in gridIndex, count as missing
         if (!gridIndex.has(id)) {
           missing++;
           continue;
         }
-
-        // Select if not already selected (we want selection == list)
         if (!selected.has(id)) {
           toggleId(id);
           applied++;
@@ -444,7 +430,7 @@
     }
 
     // =========================
-    // UI
+    // UI (ONLY "Section")
     // =========================
     function updateUI() {
       const count = selected.size;
@@ -461,23 +447,16 @@
       $status.textContent = `Selected ${count} polygon${count === 1 ? "" : "s"} from ooipsectiongrid.`;
 
       const features = getSelectedFeatures();
-      const props0 = features[0]?.properties || {};
-      const keys = Object.keys(props0);
 
-      if (!features.length || keys.length === 0) {
-        $tableContainer.textContent = "No selection";
-        return;
-      }
-
-      const header = keys.map(k => `
-        <th>${k}
-          <button class="copyBtn" data-key="${k}" title="Copy column">Copy</button>
+      const header = `
+        <th>${SECTION_PROP}
+          <button class="copyBtn" data-key="${SECTION_PROP}" title="Copy column">Copy</button>
         </th>
-      `).join("");
+      `;
 
       const rows = features.map(f => {
         const props = f.properties || {};
-        return `<tr>${keys.map(k => `<td>${props[k] ?? ""}</td>`).join("")}</tr>`;
+        return `<tr><td>${props[SECTION_PROP] ?? ""}</td></tr>`;
       }).join("");
 
       $tableContainer.innerHTML = `<table><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table>`;
@@ -505,21 +484,24 @@
       }
     }
 
+    // =========================
+    // Download CSV (ONLY "Section")
+    // =========================
     function downloadCSV() {
       if (selected.size === 0) return;
 
       const features = getSelectedFeatures();
-      const keys = Object.keys(features[0]?.properties || {});
-      if (keys.length === 0) return alert("Selected features have no properties to export.");
+      if (!features.length) return;
 
       const escapeCell = (v) => {
         const s = (v == null) ? "" : String(v);
         return `"${s.replace(/"/g, '""')}"`;
       };
 
+      const header = SECTION_PROP;
       const lines = [
-        keys.join(","),
-        ...features.map(f => keys.map(k => escapeCell(f.properties?.[k])).join(","))
+        header,
+        ...features.map(f => escapeCell(f.properties?.[SECTION_PROP]))
       ];
 
       const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
@@ -527,7 +509,7 @@
 
       const a = document.createElement("a");
       a.href = url;
-      a.download = "ooipsectiongrid_selected_polygons.csv";
+      a.download = "ooipsectiongrid_selected_Section.csv";
       a.click();
 
       URL.revokeObjectURL(url);
@@ -558,7 +540,6 @@
               return;
             }
 
-            // Grid: selectable
             gridIndex.set(id, {
               layer,
               feature,
@@ -569,23 +550,19 @@
 
             if (selected.has(id)) applySelectionStyle(layer, true, baseStyle, true);
 
-            // ---- Important: ensure NO per-feature tooltip exists ----
-            // (We do not call layer.bindTooltip)
+            // no per-feature tooltip binding
             layer.off();
 
-            // Hover shows the single global tooltip
             layer.on("mouseover", () => {
-              if (drawState.active) return; // keep tooltips only on normal hover
+              if (drawState.active) return;
               const html = makeTooltipContent(feature?.properties);
               showHoverTooltipForLayer(layer, html);
             });
 
-            // Mouse out hides it
             layer.on("mouseout", () => {
               hideHoverTooltip();
             });
 
-            // Click toggles selection
             layer.on("click", () => {
               if (drawState.active) return;
               toggleIds([id]);
@@ -615,7 +592,6 @@
       drawState.points = [e.latlng];
       drawState.toggledThisDrag.clear();
 
-      // Hide tooltip while drawing
       hideHoverTooltip();
 
       if (drawState.polyline) {
@@ -677,7 +653,6 @@
       drawState.points = [];
       drawState.toggledThisDrag.clear();
 
-      // Hide tooltip after finishing draw (prevents “stuck” tooltips)
       hideHoverTooltip();
 
       saveSelection();
@@ -755,9 +730,6 @@
 
         syncSavedSelectionStyles();
 
-        // If user applied a start list before grid was ready, apply it now.
-        // (We intentionally do this after saved selection sync,
-        // so the list becomes the current selection.)
         if (pendingStartList && pendingStartList.length) {
           applyStartList(pendingStartList, { replace: true });
           pendingStartList = null;
